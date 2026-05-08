@@ -293,12 +293,14 @@ impl SidebarItem for SidebarMenuItem {
                                     .gap_x_2()
                                     .justify_between()
                                     .overflow_x_hidden()
-                                    .child(
-                                        h_flex()
-                                            .flex_1()
-                                            .overflow_x_hidden()
-                                            .child(self.label.clone()),
-                                    )
+                                    .when(!self.label.is_empty(), |this| {
+                                        this.child(
+                                            h_flex()
+                                                .flex_1()
+                                                .overflow_x_hidden()
+                                                .child(self.label.clone()),
+                                        )
+                                    })
                                     .when_some(self.suffix.clone(), |this, suffix| {
                                         this.child(suffix(window, cx).into_any_element())
                                     }),

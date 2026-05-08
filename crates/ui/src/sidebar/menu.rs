@@ -298,7 +298,7 @@ impl SidebarItem for SidebarMenuItem {
                                             h_flex()
                                                 .flex_1()
                                                 .overflow_x_hidden()
-                                                .child(self.label.clone()),
+                                                .child(self.label),
                                         )
                                     })
                                     .when_some(self.suffix.clone(), |this, suffix| {

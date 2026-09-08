@@ -228,8 +228,11 @@ markdown("---\nname: example\ndescription: Example metadata.\n---")
     .plugin(FrontmatterPlugin::new())
 ```
 
-Values are rendered as plain text. Folded and literal block scalars are
-supported; unsupported YAML frontmatter falls back to a YAML code block.
+Values are rendered as plain text. Simple unquoted values and block scalars
+using `|-` or `>-` are supported; literal scalars preserve content indentation.
+Quoted values, inline comments, collections, aliases, other block headers, and
+more-indented folded lines fall back to a YAML code block, preserving the source
+instead of displaying an incorrectly interpreted value.
 
 ## Code Block Actions
 

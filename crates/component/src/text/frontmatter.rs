@@ -32,8 +32,9 @@ impl Frontmatter {
 ///
 /// Enable frontmatter parsing with [`super::MarkdownExtensions::frontmatter`]
 /// before registering this plugin. Values are rendered as plain text; YAML
-/// sequences and other unsupported top-level values use TextView's YAML code
-/// block fallback.
+/// block scalars with `|-` and `>-` are supported. Quoted/compound values,
+/// comments after values, other block headers, and more-indented folded lines
+/// use TextView's YAML code block fallback.
 #[derive(Default)]
 pub struct FrontmatterPlugin;
 
@@ -93,30 +94,51 @@ fn parse_frontmatter(value: &str) -> Option<Frontmatter> {
         key: String,
         value: String,
         style: ScalarStyle,
+        indent: Option<usize>,
+        lines: usize,
     }
 
-    fn push_continuation(entry: &mut Entry, line: &str) {
-        let line = line.trim();
+    fn push_continuation(entry: &mut Entry, line: &str) -> Option<()> {
+        // Remove only the structural indentation, never scalar content spaces.
+        let line = if line.is_empty() {
+            ""
+        } else {
+            let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+            if indent == line.len() && entry.indent.is_none() {
+                // Its significance depends on the indentation of a later line.
+                return None;
+            }
+            let required = *entry.indent.get_or_insert(indent);
+            if required == 0 || (indent < required && indent != line.len()) {
+                return None;
+            }
+            &line[required.min(line.len())..]
+        };
         match entry.style {
             ScalarStyle::Folded => {
+                // Folding more-indented lines requires a wider YAML grammar.
+                if line.starts_with([' ', '\t']) {
+                    return None;
+                }
                 if line.is_empty() {
-                    if !entry.value.is_empty() {
-                        entry.value.push('\n');
-                    }
-                    return;
+                    entry.value.push('\n');
+                    entry.lines += 1;
+                    return Some(());
                 }
                 if !entry.value.is_empty() && !entry.value.ends_with('\n') {
                     entry.value.push(' ');
                 }
             }
             ScalarStyle::Literal => {
-                if !entry.value.is_empty() {
+                if entry.lines > 0 {
                     entry.value.push('\n');
                 }
             }
-            ScalarStyle::Plain | ScalarStyle::Empty => return,
+            ScalarStyle::Plain | ScalarStyle::Empty => return None,
         }
         entry.value.push_str(line);
+        entry.lines += 1;
+        Some(())
     }
 
     fn is_plain_key(key: &str) -> bool {
@@ -135,7 +157,7 @@ fn parse_frontmatter(value: &str) -> Option<Frontmatter> {
             if current.as_ref().is_some_and(|entry| {
                 matches!(entry.style, ScalarStyle::Folded | ScalarStyle::Literal)
             }) {
-                push_continuation(current.as_mut()?, line);
+                push_continuation(current.as_mut()?, line)?;
             }
             continue;
         }
@@ -152,6 +174,9 @@ fn parse_frontmatter(value: &str) -> Option<Frontmatter> {
 
         if is_top_level {
             let (key, raw_value) = line.split_once(':')?;
+            if !raw_value.is_empty() && !raw_value.starts_with([' ', '\t']) {
+                return None;
+            }
             let key = key.trim();
             if !is_plain_key(key) {
                 return None;
@@ -163,21 +188,39 @@ fn parse_frontmatter(value: &str) -> Option<Frontmatter> {
 
             let raw_value = raw_value.trim();
             let (value, style) = match raw_value {
-                ">" | ">-" | ">+" => (String::new(), ScalarStyle::Folded),
-                "|" | "|-" | "|+" => (String::new(), ScalarStyle::Literal),
+                ">-" => (String::new(), ScalarStyle::Folded),
+                "|-" => (String::new(), ScalarStyle::Literal),
                 "" => (String::new(), ScalarStyle::Empty),
-                _ => (raw_value.to_string(), ScalarStyle::Plain),
+                _ => {
+                    // Decline syntax we cannot interpret faithfully. The caller
+                    // preserves it using the existing YAML code block fallback.
+                    if raw_value.starts_with([
+                        '\'', '"', '[', ']', '{', '}', '&', '*', '!', '|', '>', '#', '%', '@', '`',
+                    ]) || ["- ", "? ", ": ", "-\t", "?\t", ":\t"]
+                        .iter()
+                        .any(|prefix| raw_value.starts_with(prefix))
+                        || raw_value.ends_with(':')
+                        || [" #", "\t#", ": ", ":\t"]
+                            .iter()
+                            .any(|pattern| raw_value.contains(pattern))
+                    {
+                        return None;
+                    }
+                    (raw_value.to_string(), ScalarStyle::Plain)
+                }
             };
             current = Some(Entry {
                 key: key.to_string(),
                 value,
                 style,
+                indent: None,
+                lines: 0,
             });
         } else if current
             .as_ref()
             .is_some_and(|entry| matches!(entry.style, ScalarStyle::Folded | ScalarStyle::Literal))
         {
-            push_continuation(current.as_mut()?, line);
+            push_continuation(current.as_mut()?, line)?;
         } else {
             return None;
         }
@@ -195,7 +238,11 @@ fn parse_frontmatter(value: &str) -> Option<Frontmatter> {
             .into_iter()
             .map(|entry| FrontmatterEntry {
                 key: entry.key.into(),
-                value: entry.value.into(),
+                value: if matches!(entry.style, ScalarStyle::Folded | ScalarStyle::Literal) {
+                    entry.value.trim_end_matches('\n').to_owned().into()
+                } else {
+                    entry.value.into()
+                },
             })
             .collect(),
     })
@@ -270,5 +317,48 @@ mod tests {
     #[test]
     fn rejects_non_mapping_yaml() {
         assert!(parse_frontmatter("- name: example").is_none());
+    }
+
+    #[test]
+    fn preserves_literal_scalar_whitespace() {
+        let parsed = parse_frontmatter("notes: |-\n\n  first  \n    indented\n    \n  last\n\n")
+            .expect("literal scalar");
+        assert_eq!(
+            parsed.entries[0].value.as_ref(),
+            "\nfirst  \n  indented\n  \nlast"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_scalar_syntax() {
+        for source in [
+            "title: Hello # comment",
+            "title: \"Hello\\nworld\"",
+            "title: 'Hello'",
+            "tags: [one, two]",
+            "config: {theme: dark}",
+            "value: &anchor hello",
+            "value: *anchor",
+            "value: !!str hello",
+            "value: a: b",
+            "notes: >-\n  first\n    indented\n  last",
+            "notes: |-\n    first\n  invalid indentation",
+            "notes: |2-\n  text",
+            "notes: |\n  text",
+            "notes: >+\n  text",
+        ] {
+            assert!(parse_frontmatter(source).is_none(), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn preserves_plain_scalar_punctuation() {
+        let parsed = parse_frontmatter("url: https://example.com/#section\nvalue: -42")
+            .expect("plain values");
+        assert_eq!(
+            parsed.entries[0].value.as_ref(),
+            "https://example.com/#section"
+        );
+        assert_eq!(parsed.entries[1].value.as_ref(), "-42");
     }
 }

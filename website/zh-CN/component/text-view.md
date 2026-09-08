@@ -172,8 +172,10 @@ markdown("---\nname: example\ndescription: Example metadata.\n---")
     .plugin(FrontmatterPlugin::new())
 ```
 
-值以纯文本渲染。支持 folded 与 literal block scalar；不支持的 YAML
-frontmatter 会回退为 YAML code block。
+值以纯文本渲染。支持简单的无引号值，以及使用 `|-` 或 `>-` 的 block scalar；
+literal scalar 会保留内容缩进。带引号的值、行尾注释、集合、别名、其他 block
+header，以及包含额外缩进行的 folded scalar 会回退为 YAML code block，
+保留原始内容，避免显示错误解析的值。
 
 ## 代码块操作
 

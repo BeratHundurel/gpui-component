@@ -526,8 +526,8 @@ impl RenderOnce for TabBar {
                     .child(
                         h_flex()
                             .id("tabs-inner")
-                            .mx(-padding_x)
-                            .px(padding_x)
+                            // Keep the scroll viewport inside the wrapper padding so
+                            // explicit reveals leave space at both ends of the bar.
                             .relative()
                             .gap(gap)
                             .overflow_x_scroll()
@@ -697,6 +697,8 @@ mod tests {
 
     struct DynamicScrollHarness {
         scroll_handle: ScrollHandle,
+        menu: bool,
+        size: Size,
         tabs: usize,
         selected_index: usize,
     }
@@ -747,15 +749,19 @@ mod tests {
 
     impl Render for DynamicScrollHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().w(px(100.)).child(
-                TabBar::new("dynamic-scrolling-tabs")
-                    .w_full()
-                    .segmented()
-                    .menu(true)
-                    .track_scroll(&self.scroll_handle)
-                    .selected_index(self.selected_index)
-                    .children(self.tabs()),
-            )
+            div()
+                .w(px(100.))
+                .debug_selector(|| "dynamic-bar".into())
+                .child(
+                    TabBar::new("dynamic-scrolling-tabs")
+                        .with_size(self.size)
+                        .w_full()
+                        .segmented()
+                        .menu(self.menu)
+                        .track_scroll(&self.scroll_handle)
+                        .selected_index(self.selected_index)
+                        .children(self.tabs()),
+                )
         }
     }
 
@@ -836,6 +842,8 @@ mod tests {
             let scroll_handle = scroll_handle.clone();
             move |_, _| DynamicScrollHarness {
                 scroll_handle,
+                menu: true,
+                size: Size::default(),
                 tabs: 4,
                 selected_index: 3,
             }
@@ -857,6 +865,55 @@ mod tests {
         assert!(last_tab.left() >= viewport.left());
         assert!(last_tab.right() <= viewport.right());
         assert_eq!(scroll_handle.children_count(), 6);
+    }
+
+    #[gpui::test]
+    fn scrolling_to_a_new_tab_preserves_bar_padding(cx: &mut TestAppContext) {
+        cx.update(crate::theme::init);
+        for (size, padding) in [
+            (Size::XSmall, px(2.)),
+            (Size::Small, px(3.)),
+            (Size::Medium, px(4.)),
+            (Size::Large, px(4.)),
+        ] {
+            let scroll_handle = ScrollHandle::new();
+            let (view, cx) = cx.add_window_view({
+                let scroll_handle = scroll_handle.clone();
+                move |_, _| DynamicScrollHarness {
+                    scroll_handle,
+                    menu: false,
+                    size,
+                    tabs: 4,
+                    selected_index: 0,
+                }
+            });
+            draw(cx);
+            draw(cx);
+            view.update(cx, |view, cx| {
+                view.tabs = 5;
+                view.scroll_handle.scroll_to_item(4);
+                cx.notify();
+            });
+            draw(cx);
+            draw(cx);
+            let bar = cx.debug_bounds("dynamic-bar").unwrap();
+            let last_tab = cx.debug_bounds("dynamic-tab-4").unwrap();
+            assert_eq!(
+                bar.right() - last_tab.right(),
+                padding,
+                "right padding for {size:?}"
+            );
+            scroll_handle.scroll_to_item(0);
+            draw(cx);
+            draw(cx);
+            let first_tab = cx.debug_bounds("dynamic-tab-0").unwrap();
+            assert_eq!(
+                first_tab.left() - bar.left(),
+                padding,
+                "left padding for {size:?}"
+            );
+            assert_eq!(scroll_handle.children_count(), 5);
+        }
     }
 
     #[gpui::test]
